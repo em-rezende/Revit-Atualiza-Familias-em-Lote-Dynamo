@@ -1,0 +1,14 @@
+# Backups dos originais (.rfa) feitos pelo proprio script
+_backup_upgrade/
+
+# Logs gerados pelo script na raiz da pasta pesquisada
+_log_*.txt
+
+# Cache do Python
+__pycache__/
+*.py[cod]
+
+# Arquivos auxiliares que o Revit cria ao sobrescrever um .rfa
+*.0001.rfa
+*.0002.rfa
+~$*
