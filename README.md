@@ -4,6 +4,10 @@ Script em Python para rodar dentro do **Dynamo do Revit 2026** (engine **CPython
 Processa uma **pasta inteira** (e subpastas) de famílias `.rfa`, atualizando cada
 arquivo para o Revit 2026 e padronizando unidades/formato numérico.
 
+O usuário escolhe, no próprio grafo, **o que vai virar preview** (tipo de vista), **de que
+ângulo** (as 6 vistas do cubo) e **com qual estilo visual** — veja
+[Escolhas no Dynamo](#️-escolhas-no-dynamo-custom-selection-in1in2in3).
+
 ## 🎯 O que o script faz (por família)
 
 1. **Abre a família em segundo plano** — abrir + salvar no Revit 2026 já converte o
@@ -19,26 +23,31 @@ arquivo para o Revit 2026 e padronizando unidades/formato numérico.
 4. **Eliminar não utilizados (Purge Unused) em loop**, até não sobrar nada —
    usando a API oficial `Document.GetUnusedElements()` (a mesma lista da janela
    "Eliminar não utilizados" do Revit), seguida de `Document.Delete()`.
-5. **Vista 3D `Vista 1` garantida, em SE Isometric** — o script assegura uma vista
-   3D chamada `NOME_VISTA_3D` (`"Vista 1"`): renomeia a vista 3D existente (ou cria
-   uma com `View3D.CreateIsometric` se a família não tiver nenhuma), aplica a direção
-   `DIRECAO_VISTA_3D` (`View3D.SetOrientation`) e **grava a orientação dentro do
-   arquivo** (`View3D.SaveOrientation`) — o `.rfa` reabre já em SE Isometric.
-   Sem vista 3D para preview, o script cria uma; sem tipo de vista 3D, segue e
-   registra o aviso.
-6. **Vista 3D em estilo "Sombreado com arestas", sem anotações/cotas** — na **mesma**
-   vista 3D gravada como preview, o script aplica o estilo visual
-   (`View.DisplayStyle`, via `ESTILO_VISUAL_VISTA_3D`) e, com
-   `MOSTRAR_ARESTAS_VISTA_3D = True`, usa a variante **com arestas** do estilo
-   (`DisplayStyle.ShadingWithEdges` = "Sombreado com arestas"). Em seguida
-   **oculta por categoria** as anotações/cotas (cotas, notas de texto, símbolos de
-   anotação, níveis, eixos) e os elementos auxiliares (planos/linhas/pontos de
-   referência, paredes, pisos, forros, telhados) com `View.SetCategoryHidden()`
-   (`OCULTAR_CATEGORIAS_VISTA_3D` / `CATEGORIAS_OCULTAS_VISTA_3D`). A categoria da
-   **própria família** nunca é ocultada — o preview nunca fica vazio. Veja
-   [Estilo visual e categorias ocultas na vista 3D](#estilo-visual-e-categorias-ocultas-na-vista-3d).
-7. **Preview/miniatura** — a vista 3D é gravada como preview permanente do documento
-   (`DocumentPreviewSettings.PreviewViewId`, validada antes por
+5. **Vista de preview garantida e orientada** — o script usa (ou cria) uma vista do
+   **tipo escolhido em `IN[1]`** (`Vista 3D`, `Planta`, `Corte`, `Detalhe` ou `Elevação`)
+   para ser o preview/miniatura do arquivo:
+   - **Vista 3D**: renomeia para `NOME_VISTA_3D` (`"Vista 1"`), aplica a isométrica
+     escolhida em `IN[2]` (uma das **6 vistas do cubo** — veja
+     [as 6 isométricas](#-as-6-isométricas-do-cubo-in2)) com `View3D.SetOrientation`
+     e **grava a orientação dentro do arquivo** (`View3D.SaveOrientation`) — o `.rfa`
+     reabre já naquela direção.
+   - **Planta / Corte / Detalhe / Elevação**: procura uma vista existente desse tipo;
+     se não houver, tenta criar (`ViewPlan.Create` / `ViewSection.CreateSection` /
+     `ViewDrafting.Create`). Como essas vistas nem sempre são válidas como
+     `PreviewViewId`, o script **valida** com `IsViewIdValidForPreview` e, se
+     reprovar, **cai na Vista 3D** com aviso no `OUT`.
+6. **Estilo visual escolhido em `IN[3]`, sem anotações/cotas** — na **mesma** vista
+   usada como preview, o script aplica o estilo visual (`View.DisplayStyle`) escolhido
+   pelo usuário (`Wireframe`, `Hidden Lines`, `Shading`, `Shading With Edges`,
+   `Flat Colors`, `Realistic`, `Realistic With Edges`). Em seguida **oculta por
+   categoria** as anotações/cotas (cotas, notas de texto, símbolos de anotação, níveis,
+   eixos) e os elementos auxiliares (planos/linhas/pontos de referência, paredes, pisos,
+   forros, telhados) com `View.SetCategoryHidden()` (`OCULTAR_CATEGORIAS_VISTA_3D` /
+   `CATEGORIAS_OCULTAS_VISTA_3D`). A categoria da **própria família** nunca é ocultada —
+   o preview nunca fica vazio. Veja
+   [Estilo visual e categorias ocultas](#estilo-visual-e-categorias-ocultas).
+7. **Preview/miniatura** — a vista escolhida é gravada como preview permanente do
+   documento (`DocumentPreviewSettings.PreviewViewId`, validada antes por
    `IsViewIdValidForPreview`) e informada em `SaveOptions.PreviewViewId`.
 8. **Nomes de vistas em português (Brasil)** — vistas que ainda usam os nomes padrão
    do Revit (`Ref. Level`, `Front`, `Back`, `Left`, `Right`, `Level 1`,
@@ -75,9 +84,213 @@ arquivo para o Revit 2026 e padronizando unidades/formato numérico.
 > ⚠️ **O `.py` não é o que o Dynamo executa.** O grafo `.dyn` guarda o Python
 > **embutido** (campo JSON `Code`). Depois de alterar `batch_format_families.py` é
 > obrigatório rodar `sincronizar_dyn.ps1` (veja
+> [O que compõe o projeto](#-o-que-compõe-o-projeto) e
 > [Como usar no Dynamo](#️-como-usar-no-dynamo-revit-2026)); sem isso o Dynamo
-> continua rodando a **versão antiga** do código — foi exatamente por isso que as
-> traduções novas não surtiram efeito.
+> continua rodando a **versão antiga** do código.
+
+---
+
+## 📦 O que compõe o projeto
+
+O projeto **não é só o `.dyn`**. Ele é formado por **6 arquivos que precisam ficar
+juntos na mesma pasta**, porque os utilitários se procuram por caminho relativo
+(`$PSScriptRoot` no PowerShell; `os.path.dirname(__file__)` nos validadores).
+
+| Arquivo | O que é | Obrigatório? |
+|---|---|---|
+| `Atualiza Familias em Lote.dyn` | O grafo do Dynamo (nós, fios, Custom Selections). **Contém uma cópia embutida** do Python no campo `Code` do nó Python Script. | ✅ Sim — é o que o Dynamo abre |
+| `batch_format_families.py` | O código-fonte "de verdade" do script Python. É **aqui** que se edita. | ✅ Sim — é a fonte que você edita |
+| `sincronizar_dyn.ps1` | Copia o conteúdo do `.py` para dentro do `.dyn` (campo `Code`), sem tocar no resto do grafo. Lê o `.dyn` de volta como JSON e confere caractere a caractere. | ✅ Sim — é o que mantém os dois em sincronia |
+| `validar_traducao.py` | Confere, **fora do Revit**, a tradução dos nomes de vista (inglês/francês/espanhol) e, de quebra, se o `.dyn` está sincronizado com o `.py`. | ✅ Sim — rede de segurança |
+| `validar_respostas_revit.py` | Confere, **fora do Revit**, o handler de `DialogBoxShowing` e o `IFailuresPreprocessor` (respostas automáticas "OK"). | ✅ Sim — rede de segurança |
+| `validar_vista_3d.py` | Confere, **fora do Revit**, o estilo visual e as categorias ocultas da vista de preview. | ✅ Sim — rede de segurança |
+| `README.md` | Esta documentação. | ✅ Sim — referência |
+
+### Ordem correta para salvar o projeto
+
+Como o `.dyn` guarda uma **cópia** do `.py` (no campo `Code`), salvar os dois fora de
+ordem faz o grafo voltar para a versão antiga. O fluxo é:
+
+1. **Salve os arquivos de texto normalmente** (`.py`, `.ps1`, validadores, `README.md`)
+   no editor/IDE que você usa.
+2. **No Dynamo, salve o grafo** com **Ctrl+S** (ou `Arquivo → Salvar`). Isso grava o
+   layout dos nós e as escolhas dos Custom Selections.
+3. **Rode o `sincronizar_dyn.ps1`** para copiar o `.py` atualizado para dentro do `.dyn`:
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File ".\sincronizar_dyn.ps1"
+   ```
+
+   Saída esperada:
+   ```
+   OK | .dyn sincronizado com batch_format_families.py | NNNN caracteres | Engine: CPython3
+   ```
+
+   > ⚠️ **A ordem importa:** sincronizar **antes** de salvar o grafo no Dynamo faz o
+   > Dynamo sobrescrever o `.dyn` com a versão em memória (com o `Code` antigo) — você
+   > perde a sincronização. **Primeiro salva o grafo no Dynamo, depois sincroniza.**
+4. **Rode os validadores** (opcional, mas recomendado antes de rodar no Revit):
+
+   ```powershell
+   python .\validar_traducao.py
+   python .\validar_respostas_revit.py
+   python .\validar_vista_3d.py
+   ```
+
+   Cada um deve terminar com código de saída `0` (`VERIFICACOES FALHAS: 0` ou
+   `OK: todas as traducoes esperadas foram confirmadas.`).
+
+### Como saber que está tudo em sincronia
+
+Feche e reabra o `.dyn` no Dynamo, clique no nó Python Script e role o código embutido
+até achar a constante que você mudou (por exemplo `DIRECOES_VISTA_3D`). Ela deve estar
+**igual ao `.py`**. Se estiver diferente, a sincronização não pegou.
+
+O teste definitivo é o `validar_traducao.py`: ele lê o `.dyn`, extrai o `Code` e compara
+**caractere por caractere** com o `.py`. Se estiver fora de sincronia, ele falha com:
+
+```
+- Python embutido no .dyn (rode sincronizar_dyn.ps1): obtido ..., esperado ...
+```
+
+### Levar o projeto para outro computador
+
+Copie a **pasta inteira** (todos os 6 arquivos juntos), mantendo os nomes exatos. Não
+adianta copiar só o `.dyn` porque ele não carrega o `.py` sozinho — ele carrega a cópia
+que está dentro dele, que pode estar desatualizada em relação ao `.py` que ficou para
+trás.
+
+### Resumo de uma linha
+
+**Salve o `.dyn` no Dynamo → rode `sincronizar_dyn.ps1` → confirme com
+`validar_traducao.py`.** Os três passos, nessa ordem, garantem que o projeto está íntegro.
+
+---
+
+## 🎛️ Escolhas no Dynamo (Custom Selection → `IN[1]`/`IN[2]`/`IN[3]`)
+
+O **editor do Dynamo** não permite criar botões/dropdowns a partir do Python — quem cria
+os nós de UI é o próprio usuário, arrastando-os no canvas. O script expõe as escolhas
+como **entradas opcionais** `IN[1]`, `IN[2]` e `IN[3]`; o usuário conecta um nó
+**Custom Selection** (nativo a partir do Dynamo 2.16 / Revit 2023.1) a cada uma.
+
+As três entradas são **opcionais**: se uma delas não vier (ou vier vazia/`None`), vale a
+constante de configuração correspondente. Se vier um valor **desconhecido**, o script
+cai no padrão e registra `AVISO | IN[x]: valor desconhecido '...'` no `OUT` — nunca
+quebra o lote.
+
+### Esquema de ligação no grafo
+
+```
+┌──────────────────┐
+│ Directory Path   │──► IN[0]  (pasta das famílias)
+└──────────────────┘
+
+┌──────────────────────────┐
+│ Custom Selection         │
+│ (tipo de vista)          │──► IN[1]
+└──────────────────────────┘
+
+┌──────────────────────────┐
+│ Custom Selection         │
+│ (isométrica)             │──► IN[2]
+└──────────────────────────┘
+
+┌──────────────────────────┐
+│ Custom Selection         │
+│ (estilo visual)          │──► IN[3]
+└──────────────────────────┘
+                │
+                ▼
+        ┌───────────────┐
+        │ Python Script │──► OUT
+        │  (CPython3)   │
+        └───────────────┘
+```
+
+### `IN[1]` — tipo de vista que será gravada como preview
+
+| Display (visível ao usuário) | Value (passado ao Python) | Chave interna |
+|---|---|---|
+| Vista 3D | `VISTA_3D` | `VISTA_3D` |
+| Planta | `PLANTA` | `PLANTA` |
+| Corte | `CORTE` | `CORTE` |
+| Detalhe | `DETALHE` | `DETALHE` |
+| Elevação | `ELEVACAO` | `ELEVACAO` |
+
+- Se a vista do tipo escolhido **não existir**, o script tenta criá-la
+  (`ViewPlan.Create`, `ViewSection.CreateSection`, `ViewDrafting.Create`).
+- Como Planta/Corte/Detalhe/Elevação **nem sempre são válidas como `PreviewViewId`**, o
+  script valida com `IsViewIdValidForPreview` e, se reprovar, **cai na Vista 3D** com
+  aviso no `OUT`.
+- A **isométrica** (`IN[2]`) só é aplicada quando o tipo escolhido é `Vista 3D` —
+  Planta/Corte/Detalhe/Elevação têm direção fixa pela própria natureza.
+
+### `IN[2]` — as 6 isométricas do cubo
+
+São as **6 vistas possíveis de um cubo** pelo ViewCube. As 4 primeiras equivalem às
+antigas `SE/SO/NE/NO Isometric` (os nomes antigos continuam aceitos como apelido, para
+não quebrar grafos que já os usavam).
+
+| Display (visível ao usuário) | Value (passado ao Python) | O que é |
+|---|---|---|
+| Frente-Superior-Direita | `FSD` | Canto superior frontal direito (era `SE Isometric`) |
+| Frente-Superior-Esquerda | `FSE` | Canto superior frontal esquerdo (era `SO Isometric`) |
+| Tras-Superior-Direita | `TSD` | Canto superior traseiro direito (era `NE Isometric`) |
+| Tras-Superior-Esquerda | `TSE` | Canto superior traseiro esquerdo (era `NO Isometric`) |
+| Frente-Inferior-Direita | `FID` | Canto inferior frontal direito (câmera abaixo, olhando para cima) |
+| Frente-Inferior-Esquerda | `FIE` | Canto inferior frontal esquerdo (câmera abaixo, olhando para cima) |
+
+Todos os pares `forward`/`up` são **ortogonais** (produto escalar = 0), requisito da API
+`ViewOrientation3D` — sem isso o Revit lança
+*"up vector is not perpendicular to the view direction"*.
+
+#### Os vetores por trás das 6 direções
+
+| Chave | forward | up | Canto visto |
+|---|---|---|---|
+| `FSD` | `(-1, 1, -1)` | `(-1, 1, 2)` | Sudeste, acima |
+| `FSE` | `(1, 1, -1)` | `(1, 1, 2)` | Sudoeste, acima |
+| `TSD` | `(-1, -1, -1)` | `(-1, -1, 2)` | Nordeste, acima |
+| `TSE` | `(1, -1, -1)` | `(1, -1, 2)` | Noroeste, acima |
+| `FID` | `(-1, 1, 1)` | `(-1, 1, -2)` | Sudeste, abaixo |
+| `FIE` | `(1, 1, 1)` | `(1, 1, -2)` | Sudoeste, abaixo |
+
+Para as duas de baixo (`FID`/`FIE`), o `up` tem componente Z negativo de propósito: a
+câmera está **abaixo** do modelo olhando para cima, então o "topo da tela" precisa
+apontar para -Z, senão a imagem sai de cabeça para baixo no sentido errado.
+
+### `IN[3]` — estilo visual (`View.DisplayStyle`)
+
+| Display (visível ao usuário) | Value (passado ao Python) | `DisplayStyle` |
+|---|---|---|
+| Wireframe | `WIREFRAME` | `DisplayStyle.Wireframe` |
+| Hidden Lines | `HIDDEN_LINES` | `DisplayStyle.HLR` |
+| Shading | `SHADING` | `DisplayStyle.Shading` |
+| Shading With Edges | `SHADING_WITH_EDGES` | `DisplayStyle.ShadingWithEdges` |
+| Flat Colors | `FLAT_COLORS` | `DisplayStyle.FlatColors` |
+| Realistic | `REALISTIC` | `DisplayStyle.Realistic` |
+| Realistic With Edges | `REALISTIC_WITH_EDGES` | `DisplayStyle.RealisticWithEdges` |
+
+> ⚠️ **Interação com `MOSTRAR_ARESTAS_VISTA_3D`:** se essa flag estiver `True` (padrão) e
+> o estilo escolhido for `SHADING` ou `REALISTIC`, o script aplica automaticamente a
+> variante **com arestas** (`SHADING_WITH_EDGES` / `REALISTIC_WITH_EDGES`). Para obter
+> `Shading` "puro" (sem arestas), ou escolha `Shading With Edges` explicitamente e
+> desligue a flag, ou desligue `MOSTRAR_ARESTAS_VISTA_3D = False` no topo do script.
+
+### Como conferir no `OUT`
+
+Após executar, a primeira linha do `OUT` mostra as escolhas que o script recebeu:
+
+```
+RESUMO | familias encontradas: N | OK: ... | IN[1] tipo de vista: VISTA_3D |
+IN[2] isometrica: FSD | IN[3] estilo: SHADING | ...
+```
+
+Se você selecionou "Frente-Inferior-Direita" no dropdown e o `OUT` mostrar
+`IN[2] isometrica: FID`, está tudo certo. Se aparecer `AVISO | IN[2]: valor
+desconhecido 'One'`, o Custom Selection ainda está com o valor padrão (`One`) — volte
+ao passo 2 e configure as opções.
 
 ---
 
@@ -115,8 +328,8 @@ Duas coisas davam errado:
 ```python
 opcoes = SaveOptions()          # SaveOptions também aceita Compact e PreviewViewId
 opcoes.Compact = True
-if vista3d is not None:
-    opcoes.PreviewViewId = vista3d.Id
+if vista_preview is not None:
+    opcoes.PreviewViewId = vista_preview.Id
 doc.Save(opcoes)                # grava no MESMO arquivo, sem "File already exists!"
 ```
 
@@ -167,30 +380,27 @@ backup. Com uma **lista** de pastas em `IN[0]`, cada pasta recebe o seu.
 
 ---
 
-## 🧭 Vista 3D `Vista 1` em SE Isometric (orientação gravada no arquivo)
+## 🧭 Vista de preview: tipo, direção e gravação da orientação
 
 ### Ordem das ações no lote
 
-1. `obter_vista_3d(doc)` escolhe a vista 3D, nesta ordem de preferência:
-   1. a vista 3D que **já** se chama `NOME_VISTA_3D` (`"Vista 1"`);
-   2. uma vista 3D válida para preview (`DocumentPreviewSettings.IsViewIdValidForPreview`),
-      preferindo os nomes típicos criados pelo Revit (`View 1`, `Vista 3D`, `{3D}`...);
-   3. **cria** uma vista 3D isométrica com `View3D.CreateIsometric(doc, tipo.Id)`
-      (tipo de vista cujo `ViewFamily == ViewFamily.ThreeDimensional`), se
-      `CRIAR_VISTA_3D_SE_FALTAR = True`.
-
-   Modelos de vista (`View3D.IsTemplate = True`) são sempre ignorados.
-2. `padronizar_nome_vista_3d(doc, vista)` garante o nome `Vista 1` (`View.Name`); se
-   o nome já estiver em uso por outra vista, avisa e não renomeia.
-3. `orientar_vista_3d(doc, vista)` aplica a direção de `DIRECAO_VISTA_3D` e **grava**.
-4. `definir_estilo_vista_3d(doc, vista, avisos)` aplica o estilo visual de
-   `ESTILO_VISUAL_VISTA_3D` (`View.DisplayStyle`); se a vista já está no estilo pedido,
-   devolve `True` sem criar transação.
-5. `ocultar_categorias_vista_3d(doc, vista, avisos)` oculta **por categoria** o que está
-   em `CATEGORIAS_OCULTAS_VISTA_3D` (uma única transação) e devolve a lista do que foi
-   ocultado — a categoria da própria família é sempre preservada.
-6. `definir_preview_permanente(doc, vista)` grava a vista como preview permanente.
-7. `renomear_vistas_pt_br(doc)` traduz as vistas que continuam com nome padrão em inglês.
+1. `obter_vista_preview(doc, tipo_vista, direcao3d, avisos)` resolve a vista de
+   preview de acordo com `IN[1]`:
+   - **`VISTA_3D`**: `obter_vista_3d()` + `padronizar_nome_vista_3d()` +
+     `orientar_vista_3d()` (aplica a isométrica de `IN[2]` e grava).
+   - **`PLANTA` / `CORTE` / `DETALHE` / `ELEVACAO`**: `obter_ou_criar_vista_*()`
+     (procura uma existente; se não houver, cria). A direção de `IN[2]` é ignorada
+     (essas vistas têm direção fixa).
+   - Se a vista obtida **não for válida** como `PreviewViewId`, o script cai na
+     **Vista 3D** com aviso.
+2. `definir_estilo_vista_3d(doc, vista, avisos)` aplica o estilo de `IN[3]`
+   (`View.DisplayStyle`); se a vista já está no estilo pedido, devolve `True` sem
+   criar transação.
+3. `ocultar_categorias_vista_3d(doc, vista, avisos)` oculta **por categoria** o que
+   está em `CATEGORIAS_OCULTAS_VISTA_3D` (uma única transação) e devolve a lista do
+   que foi ocultado — a categoria da própria família é sempre preservada.
+4. `definir_preview_permanente(doc, vista)` grava a vista como preview permanente.
+5. `renomear_vistas_pt_br(doc)` traduz as vistas que continuam com nome padrão em inglês.
 
 ### Por que a vista 3D é renomeada ANTES de gravar a orientação
 
@@ -219,59 +429,37 @@ if GRAVAR_ORIENTACAO_VISTA_3D and vista.CanSaveOrientation():
 > `View3D.SaveOrientationAndLock()`, que o script **não** usa — assim a vista continua
 > livre para o usuário.
 
-### SE Isometric e as demais direções
+### Estilo visual e categorias ocultas
 
-`ViewOrientation3D(eye, up, forward)` recebe o **ponto do olho**, o vetor *up* e o vetor
-*forward*. O Revit exige que *up* seja **perpendicular** a *forward* (caso contrário
-lança exceção). Todos os pares da tabela são ortogonais e mantêm o eixo Z na vertical
-da tela — a mesma direção da vista 3D padrão do Revit:
+Dois ajustes são feitos **na mesma vista** que vira preview, depois de resolver a vista
+e **antes** de salvar:
 
-| `DIRECAO_VISTA_3D` | Direção | forward | up | forward · up |
-|---|---|---|---|---|
-| `SE_ISOMETRIC` (padrão) | Sudeste | `(-1, 1, -1)` | `(-1, 1, 2)` | 0 |
-| `SO_ISOMETRIC` | Sudoeste | `(1, 1, -1)` | `(1, 1, 2)` | 0 |
-| `NE_ISOMETRIC` | Nordeste | `(-1, -1, -1)` | `(-1, -1, 2)` | 0 |
-| `NO_ISOMETRIC` | Noroeste | `(1, -1, -1)` | `(1, -1, 2)` | 0 |
-
-O **olho** é calculado a partir do modelo:
-`olho = centro − forward × (diagonal × FATOR_DISTANCIA_VISTA_3D)`, em que `centro` e
-`diagonal` vêm da união das caixas de envolvimento dos elementos — obtidas com
-`Element.BoundingBox(View)`, a **propriedade indexada** que em Python se acessa como
-`elemento.get_BoundingBox(vista)` (o script tenta primeiro com a vista `Vista 1` e
-depois com `None`). Se nenhuma geometria for encontrada, usa a origem e
-`TAMANHO_MINIMO_VISTA_3D`, para a vista nunca ficar sem enquadramento.
-
-### Estilo visual e categorias ocultas na vista 3D
-
-Dois ajustes são feitos **na mesma vista 3D** que vira preview, depois de orientar e
-**antes** de salvar:
-
-| Constante | Padrão | Efeito |
+| Constante / entrada | Padrão | Efeito |
 |---|---|---|
-| `ESTILO_VISUAL_VISTA_3D` | `"SOMBREADO"` | Estilo pedido: `View.DisplayStyle` |
-| `MOSTRAR_ARESTAS_VISTA_3D` | `True` | `True` = troca o estilo pedido pela variante **com arestas** (`DisplayStyle.ShadingWithEdges`) |
+| `IN[3]` (estilo visual) | `"SHADING"` | Estilo pedido: `View.DisplayStyle` |
+| `MOSTRAR_ARESTAS_VISTA_3D` | `True` | `True` = troca `SHADING`/`REALISTIC` pela variante **com arestas** |
 | `OCULTAR_CATEGORIAS_VISTA_3D` | `True` | liga/desliga o passo que oculta categorias |
 | `CATEGORIAS_OCULTAS_VISTA_3D` | 12 `BuiltInCategory` | `View.SetCategoryHidden(cat.Id, True)` |
 
 `View.DisplayStyle` é propriedade da **vista** (não do documento): fica gravada no `.rfa`
 e é o estilo que aparece na miniatura. Valores aceitos:
 
-| `ESTILOS_VISUAIS_VISTA_3D` | `DisplayStyle` | Rótulo no Revit |
+| Chave interna | `DisplayStyle` | Rótulo no Revit |
 |---|---|---|
 | `ESTRUTURA_ARAME` | `DisplayStyle.Wireframe` | Estrutura de arame |
 | `LINHAS_OCULTAS` | `DisplayStyle.HLR` | Linhas ocultas |
-| `SOMBREADO` (padrão) | `DisplayStyle.Shading` | Sombreado |
-| `SOMBREADO_COM_ARESTAS` | `DisplayStyle.ShadingWithEdges` | **Sombreado com arestas** (é o padrão de fato) |
+| `SOMBREADO` | `DisplayStyle.Shading` | Sombreado |
+| `SOMBREADO_COM_ARESTAS` | `DisplayStyle.ShadingWithEdges` | **Sombreado com arestas** |
 | `CORES_CONSISTENTES` | `DisplayStyle.FlatColors` | Cores consistentes |
 | `REALISTA` | `DisplayStyle.Realistic` | Realista |
 | `REALISTA_COM_ARESTAS` | `DisplayStyle.RealisticWithEdges` | Realista com arestas |
 
 `estilo_visual_configurado()` aceita a **chave**, um **apelido** (`SHADING`, `Shaded`,
-`Wireframe`, `Hidden_Lines`, `SHADING_WITH_EDGES`, `FlatColors`, `Realistic`...) ou o
+`Wireframe`, `HIDDEN_LINES`, `SHADING_WITH_EDGES`, `FLAT_COLORS`, `Realistic`...) ou o
 **próprio valor do enum** (`ESTILO_VISUAL_VISTA_3D = DisplayStyle.Shading`). A comparação
-normaliza caixa e espaços (`"_".join(valor.split()).upper()`), então `"Estrutura de arame"`
-e `"Sombreado com arestas"` também funcionam. Com `""` (string vazia) ou `None` o estilo
-**não é mexido** (`estilo 3D: nao aplicado` no `OUT`).
+normaliza caixa, espaços, hífens e underscores (`"Shading With Edges"`,
+`"SHADING_WITH_EDGES"` e `"Shading-With-Edges"` caem na mesma chave). Com `""` (string
+vazia) ou `None` o estilo **não é mexido** (`estilo: nao aplicado` no `OUT`).
 
 #### Arestas visíveis no preview (`MOSTRAR_ARESTAS_VISTA_3D`)
 
@@ -289,29 +477,29 @@ e `"Sombreado com arestas"` também funcionam. Com `""` (string vazia) ou `None`
 Com `MOSTRAR_ARESTAS_VISTA_3D = True` (padrão) o script troca o estilo pedido pela variante
 com arestas — inclusive quando o estilo foi dado pelo próprio valor do enum:
 
-| `ESTILO_VISUAL_VISTA_3D` | Estilo aplicado de fato |
+| Escolha em `IN[3]` | Estilo aplicado de fato |
 |---|---|
-| `"SOMBREADO"` / `SHADING` | `SOMBREADO_COM_ARESTAS` (`DisplayStyle.ShadingWithEdges`) |
-| `"REALISTA"` / `REALISTIC` | `REALISTA_COM_ARESTAS` (`DisplayStyle.RealisticWithEdges`) |
-| `"ESTRUTURA_ARAME"` / `"LINHAS_OCULTAS"` | iguais (já mostram as arestas) |
-| `"CORES_CONSISTENTES"` | igual (não há variante com arestas na API) |
-| `"SOMBREADO_COM_ARESTAS"` / `"REALISTA_COM_ARESTAS"` | iguais (já pedem as arestas) |
+| `SHADING` | `SOMBREADO_COM_ARESTAS` (`DisplayStyle.ShadingWithEdges`) |
+| `REALISTIC` | `REALISTA_COM_ARESTAS` (`DisplayStyle.RealisticWithEdges`) |
+| `WIREFRAME` / `HIDDEN_LINES` | iguais (já mostram as arestas) |
+| `FLAT_COLORS` | igual (não há variante com arestas na API) |
+| `SHADING_WITH_EDGES` / `REALISTIC_WITH_EDGES` | iguais (já pedem as arestas) |
 | `""` / `None` | nada é mexido |
 
-Com `MOSTRAR_ARESTAS_VISTA_3D = False` vale exatamente o que estiver em
-`ESTILO_VISUAL_VISTA_3D`. Em uma versão do Revit sem `ShadingWithEdges` /
-`RealisticWithEdges` o ajuste é ignorado em silêncio (o estilo simples continua sendo
-aplicado). `chave_estilo_visual()` e `descricao_estilo_visual()` fazem esse cálculo, e é
-ele que aparece no `OUT`: `estilo 3D: SOMBREADO_COM_ARESTAS (de SOMBREADO + MOSTRAR_ARESTAS_VISTA_3D)`.
+Com `MOSTRAR_ARESTAS_VISTA_3D = False` vale exatamente o que o usuário escolheu. Em uma
+versão do Revit sem `ShadingWithEdges` / `RealisticWithEdges` o ajuste é ignorado em
+silêncio (o estilo simples continua sendo aplicado). `chave_estilo_visual()` e
+`descricao_estilo_visual()` fazem esse cálculo, e é ele que aparece no `OUT`:
+`estilo: SOMBREADO_COM_ARESTAS (de SOMBREADO + MOSTRAR_ARESTAS_VISTA_3D)`.
 
 > 🔎 **Conferência depois de gravar:** `definir_estilo_vista_3d()` lê `View.DisplayStyle`
 > de volta. Se o Revit aplicar outro estilo (a API recusa alguns estilos em algumas
-> vistas), aparece `Vista 3D (estilo visual): o arquivo ficou em 'X' (pedido: 'Y')` em
+> vistas), aparece `Vista (estilo visual): o arquivo ficou em 'X' (pedido: 'Y')` em
 > `avisos:` — em vez de a miniatura sair diferente do esperado sem ninguém perceber.
 
 > ⚠️ **"Sombreado" é `DisplayStyle.Shading`.** O valor `DisplayStyle.Shaded` **não existe**
 > na API. Se a constante não for reconhecida, o script **não altera a vista** e registra
-> `Vista 3D (estilo visual): valor desconhecido '...' (use um de: ...)` em `avisos:`.
+> `Vista (estilo visual): valor desconhecido '...' (use um de: ...)` em `avisos:`.
 
 Para tirar as anotações do preview, o caminho é **por categoria**:
 
@@ -345,7 +533,7 @@ Regras de segurança do passo (tudo vira aviso no log/`OUT`, nunca interrupção
   ignorado e o `OUT` mostra
   `categoria(s) nao encontrada(s) (N): ...`.
 - Categoria que a família **não possui** (ou sem `Id` válido) também é ignorada em silêncio.
-- Se **uma** categoria falhar, as outras continuam (`Vista 3D (ocultar X): ...`).
+- Se **uma** categoria falhar, as outras continuam (`Vista (ocultar X): ...`).
 - Se a transação inteira falhar, ela é desfeita (`RollBack`) e o lote segue.
 - `OCULTAR_CATEGORIAS_VISTA_3D = False` desliga tudo: nenhuma transação é criada.
 
@@ -502,6 +690,8 @@ restrições existentes para "resolver" o aviso, o que pode **mudar o comportame
 > janelas respondidas **ficam registradas**: se o lote parar em uma janela, o `DialogId` (ou a
 > ausência dele) no log mostra exatamente o que aconteceu.
 
+---
+
 ## 🔄 Diferenças em relação à versão anterior
 
 | Item | Antes | Agora |
@@ -516,8 +706,10 @@ restrições existentes para "resolver" o aviso, o que pode **mudar o comportame
 | Segurança dos originais | nenhuma | backup em `_backup_upgrade\` |
 | Rastreabilidade | apenas `OUT` | `OUT` + log `_log_atualiza_familias.txt` |
 | Arquivo já aberto | podia falhar | é **pulado** com aviso (`arquivo ja aberto no Revit`) |
-| Vista 3D | nenhuma garantia — a família ficava com a vista 3D que tivesse (ou nenhuma) | sempre uma vista 3D chamada `Vista 1`, orientada em **SE Isometric** e com a orientação **gravada** no arquivo (`View3D.SaveOrientation`) |
-| Estilo/anotações no preview | a vista 3D ficava no estilo que estivesse e o preview aparecia cheio de cotas e anotações | estilo visual **"Sombreado"** (`ESTILO_VISUAL_VISTA_3D` → `View.DisplayStyle`) e anotações/cotas/elementos auxiliares **ocultos por categoria** (`View.SetCategoryHidden`), preservando a categoria da própria família |
+| **Tipo de vista do preview** | fixo em `Vista 1` (View3D) | escolhido em `IN[1]`: `Vista 3D` / `Planta` / `Corte` / `Detalhe` / `Elevação` |
+| **Direção da vista 3D** | 4 fixas em código (`SE/SO/NE/NO Isometric`) | escolhida em `IN[2]`: **6 vistas do cubo** (`FSD`, `FSE`, `TSD`, `TSE`, `FID`, `FIE`) — os nomes antigos continuam aceitos como apelido |
+| **Estilo visual** | constante `ESTILO_VISUAL_VISTA_3D` no `.py` | escolhido em `IN[3]` (`Wireframe`, `Hidden Lines`, `Shading`, `Shading With Edges`, `Flat Colors`, `Realistic`, `Realistic With Edges`) — a constante continua valendo como padrão |
+| **Interface do usuário** | editar o `.py` a cada mudança | Custom Selection no grafo; valor desconhecido cai no padrão com `AVISO` no `OUT` |
 | Nomes das vistas | mantidos em inglês (`Ref. Level`, `Front`, `View 2`...) | traduzidos para pt-BR (`Nível de Referência`, `Parte Frontal`, `Vista 2`...), com comparação que **ignora acento/caixa/ponto final** e que também cobre **francês e espanhol** |
 
 ---
@@ -525,80 +717,16 @@ restrições existentes para "resolver" o aviso, o que pode **mudar o comportame
 ## 🛠️ Como usar no Dynamo (Revit 2026)
 
 1. Abra o **Revit 2026** com um documento qualquer aberto.
-2. Aba **Gerenciar** → **Dynamo** → abra o arquivo `Atualiza Familias em Lote.dyn`
-   (ou crie um novo grafo).
-3. O grafo tem 2 nós:
-   - **Directory Path**: selecione a pasta com as famílias `.rfa`;
-   - **Python Script**: o código já vem **embutido** no `.dyn` (engine **CPython3**).
-
-> **Sincronização do código:** o `.dyn` guarda o Python inteiro dentro de um único campo
-> JSON (`"Code"`), em **uma só linha**, com aspas/barras escapadas. Para não colar à mão,
-> use o script `sincronizar_dyn.ps1` sempre que `batch_format_families.py` mudar:
->
-> ```powershell
-> powershell -ExecutionPolicy Bypass -File ".\sincronizar_dyn.ps1"
-> ```
->
-> Ele grava o conteúdo do `.py` no campo `Code` (preservando o resto do grafo), **lê o
-> `.dyn` de volta como JSON** e compara com o arquivo — se algo não bater, o script
-> falha com aviso. Saída esperada:
-> `OK | .dyn sincronizado com batch_format_families.py | NNNN caracteres | Engine: CPython3`
-
-> **Conferência rápida, sem abrir o Revit:** `validar_traducao.py` testa a tradução dos
-> nomes de vista (inglês, francês e espanhol) e, de quebra, confere se o `.dyn` está
-> sincronizado com o `.py`:
->
-> ```powershell
-> python .\validar_traducao.py
-> ```
->
-> Saída esperada: `Dicionario: 112 entradas | regras: 16 | casos: 146` e
-> `OK: todas as traducoes esperadas foram confirmadas.` (código de saída `0`; cada caso
-> que não bater aparece listado). Rode-o depois de mexer em `NOMES_VISTAS_PT_BR` /
-> `REGRAS_NOMES_VISTAS_PT_BR` e **antes** de `sincronizar_dyn.ps1`: se o `.dyn` estiver
-> desatualizado, o próprio validador avisa — em vez de você descobrir só no Revit.
-
-> **Validando as respostas automáticas:** `validar_respostas_revit.py` testa, **fora do
-> Revit**, o handler de `DialogBoxShowing` (`OverrideResult(1)`, `IDS_DIALOGOS_IGNORADOS`,
-> registro no log, tolerância a erro ao responder) e o `IFailuresPreprocessor` de
-> `silenciar_avisos()` (aviso descartado = "OK"; falha de erro = rollback + registro). Ele
-> usa stubs simples da API do Revit, lê o próprio `batch_format_families.py` e **não grava
-> nada em disco**:
->
-> ```powershell
-> python .\validar_respostas_revit.py
-> ```
->
-> Saída esperada: uma linha `OK   | ...` por verificação e, no fim,
-> `VERIFICACOES FALHAS: 0` (código de saída `0`; cada verificação que falhar aparece
-> listada). Rode-o depois de mexer em `_ao_mostrar_dialogo()`, `silenciar_avisos()`,
-> `RESULTADO_OK` ou `IDS_DIALOGOS_IGNORADOS`. Ele **não** confere o `.dyn` (isso é com
-> `validar_traducao.py`), então o fluxo completo é: `validar_traducao.py` →
-> `validar_respostas_revit.py` → `validar_vista_3d.py` → `sincronizar_dyn.ps1`.
-
-> **Validando o estilo visual e as categorias ocultas:** `validar_vista_3d.py` testa,
-> **fora do Revit**, o que o script faz na vista 3D antes de salvar:
-> `definir_estilo_vista_3d()` (`DisplayStyle.ShadingWithEdges` = "Sombreado com arestas",
-> chaves de `ESTILOS_VISUAIS_VISTA_3D`, apelidos, valor inválido → **aviso** sem mexer na
-> vista, e a **conferência** do estilo que ficou na vista), `chave_estilo_visual()` /
-> `descricao_estilo_visual()` / `MOSTRAR_ARESTAS_VISTA_3D` (o ajuste de arestas e o texto
-> que sai no `OUT`) e `ocultar_categorias_vista_3d()` (`View.SetCategoryHidden` por
-> categoria, `BuiltInCategory` inexistente ignorado, falha em uma categoria tolerada e a
-> categoria da **própria família nunca ocultada**), além da ordem dos passos em
-> `processar_familia()`.
-> Usa stubs da API do Revit, lê o próprio `batch_format_families.py` e **não grava nada em
-> disco**:
->
-> ```powershell
-> python .\validar_vista_3d.py
-> ```
->
-> Saída esperada: uma linha `OK   | ...` por verificação e, no fim,
-> `VERIFICACOES FALHAS: 0` (código de saída `0`; cada falha aparece listada). Rode-o depois
-> de mexer em `ESTILO_VISUAL_VISTA_3D`, `ESTILOS_VISUAIS_VISTA_3D`,
-> `CATEGORIAS_OCULTAS_VISTA_3D` ou nas funções da vista 3D.
-
-4. Conecte a saída do `Directory Path` em `IN[0]` do `Python Script`.
+2. Aba **Gerenciar** → **Dynamo** → abra o arquivo `Atualiza Familias em Lote.dyn`.
+3. Confira o grafo — ele deve ter 5 nós:
+   - **Directory Path** → `IN[0]` (pasta com as famílias `.rfa`);
+   - **Custom Selection** (tipo de vista) → `IN[1]`;
+   - **Custom Selection** (isométrica) → `IN[2]`;
+   - **Custom Selection** (estilo visual) → `IN[3]`;
+   - **Python Script** (engine **CPython3**).
+4. **Confira as opções dos Custom Selections** — veja
+   [Escolhas no Dynamo](#️-escolhas-no-dynamo-custom-selection-in1in2in3) para as tabelas
+   Display/Value que devem estar configuradas em cada um.
 5. (Opcional) Conecte a saída `OUT` a um nó **Watch** para ver o resultado.
 6. Deixe a execução em **Manual** e clique em **Executar**.
 
@@ -610,25 +738,30 @@ restrições existentes para "resolver" o aviso, o que pode **mudar o comportame
 Uma lista de textos, iniciando pelo resumo, por exemplo:
 
 ```
-RESUMO | familias encontradas: 12 | OK: 11 | puladas: 1 | falhas: 0 | janelas do Revit respondidas: 1 | log: D:\...\_log_atualiza_familias.txt
-OK     | Double-Glass 1.rfa | purgados: 8 | vista 3D: Vista 1 | estilo 3D: SOMBREADO | categorias ocultas: 12 | vistas renomeadas: 3 | salvo em: Double-Glass 1.rfa
-OK     | Porta Simples.rfa | purgados: 4 | vista 3D: Vista 1 | estilo 3D: SOMBREADO | categorias ocultas: 11 | vistas renomeadas: 0 | salvo em: Porta Simples.rfa
+RESUMO | familias encontradas: 12 | OK: 11 | puladas: 1 | falhas: 0 | IN[1] tipo de vista: VISTA_3D | IN[2] isometrica: FSD | IN[3] estilo: SHADING | janelas do Revit respondidas: 1 | log: D:\...\_log_atualiza_familias.txt
+OK     | Double-Glass 1.rfa | purgados: 8 | vista preview: Vista 1 (VISTA_3D) | estilo: SOMBREADO_COM_ARESTAS (de SOMBREADO + MOSTRAR_ARESTAS_VISTA_3D) | categorias ocultas: 12 | vistas renomeadas: 3 | salvo em: Double-Glass 1.rfa
+OK     | Porta Simples.rfa | purgados: 4 | vista preview: Vista 1 (VISTA_3D) | estilo: SHADING | categorias ocultas: 11 | vistas renomeadas: 0 | salvo em: Porta Simples.rfa
 FALHA  | Exemplo.rfa | <mensagem de erro>
+AVISO  | IN[2] (isometrica): valor desconhecido 'One' - usando padrao 'FSD'
 JANELA | OK: TaskDialog_... | <mensagem da janela do Revit respondida automaticamente>
 ```
 
-- `vista 3D:` mostra o nome da vista 3D usada como preview (`Vista 1` quando tudo correu bem).
-- `estilo 3D:` mostra o valor de `ESTILO_VISUAL_VISTA_3D` que ficou na vista (`nao aplicado`
-  quando o estilo não pôde ser trocado ou está desligado — o motivo aparece em `avisos:`).
+- `IN[1] tipo de vista:` mostra o tipo escolhido (o que será usado como preview).
+- `IN[2] isometrica:` mostra a isométrica escolhida (`FSD`, `FSE`, `TSD`, `TSE`, `FID`, `FIE`).
+- `IN[3] estilo:` mostra o estilo escolhido (`WIREFRAME`, `HIDDEN_LINES`, `SHADING`,
+  `SHADING_WITH_EDGES`, `FLAT_COLORS`, `REALISTIC`, `REALISTIC_WITH_EDGES`).
+- `vista preview: NOME (TIPO)` mostra a vista usada como preview e o tipo efetivo
+  (`VISTA_3D`, `PLANTA`, `CORTE`, `DETALHE`, `ELEVACAO`) — pode diferir de `IN[1]`
+  quando o fallback para `Vista 3D` foi acionado.
+- `estilo:` mostra a chave que valeu de fato; `nao aplicado` quando o estilo não pôde
+  ser trocado ou está desligado (o motivo aparece em `avisos:`).
 - `categorias ocultas:` é a **quantidade** de categorias de `CATEGORIAS_OCULTAS_VISTA_3D`
-  efetivamente ocultadas (categorias que a família não tem ou cujo nome não existe no Revit
-  são ignoradas; a categoria da própria família é preservada).
+  efetivamente ocultadas.
 - `vistas renomeadas:` é quantas vistas receberam nome em português (Brasil).
-- Avisos não fatais (ex.: orientação não gravada, nome já em uso) aparecem no fim da
-  linha, após `avisos:`.
+- Avisos não fatais (ex.: orientação não gravada, nome já em uso, valor desconhecido em
+  `IN[x]`) aparecem no fim da linha, após `avisos:` ou como linha `AVISO  |`.
 - `janelas do Revit respondidas:` (no `RESUMO`) e as linhas `JANELA | OK: ...` mostram as
-  janelas modais que o script respondeu sozinho — veja
-  [Janelas de aviso do Revit respondidas com "OK"](#-janelas-de-aviso-do-revit-respondidas-com-ok).
+  janelas modais que o script respondeu sozinho.
 
 ---
 
@@ -653,14 +786,14 @@ JANELA | OK: TaskDialog_... | <mensagem da janela do Revit respondida automatica
 | `UNIDADE_COMPRIMENTO` / `UNIDADE_AREA` / `UNIDADE_VOLUME` | `Millimeters` / `SquareMeters` / `CubicMeters` | Unidades aplicadas explicitamente em cada especificação |
 | `NOME_VISTA_3D` | `"Vista 1"` | Nome imposto à vista 3D salva no arquivo (e usada como preview) |
 | `CRIAR_VISTA_3D_SE_FALTAR` | `True` | `True` = cria uma vista 3D isométrica quando a família não tiver nenhuma |
-| `DIRECAO_VISTA_3D` | `"SE_ISOMETRIC"` | Direção aplicada à vista 3D (`SE_ISOMETRIC`, `SO_ISOMETRIC`, `NE_ISOMETRIC`, `NO_ISOMETRIC`) |
+| `DIRECAO_VISTA_3D` | `"FSD"` | Direção **padrão** da vista 3D quando `IN[2]` não vem (`FSD`, `FSE`, `TSD`, `TSE`, `FID`, `FIE`) |
 | `FATOR_DISTANCIA_VISTA_3D` | `2.0` | Distância do olho = fator × diagonal do modelo |
 | `TAMANHO_MINIMO_VISTA_3D` | `3.0` | Diagonal mínima considerada, em unidades internas (pés) |
-| `GRAVAR_ORIENTACAO_VISTA_3D` | `True` | `True` = chama `View3D.SaveOrientation()` (o `.rfa` reabre em SE Isometric); `False` = só orienta na sessão atual |
-| `ESTILO_VISUAL_VISTA_3D` | `"SOMBREADO"` | Estilo visual (`View.DisplayStyle`) da vista 3D: `ESTRUTURA_ARAME`, `LINHAS_OCULTAS`, `SOMBREADO` (= `DisplayStyle.Shading`), `SOMBREADO_COM_ARESTAS` (= `DisplayStyle.ShadingWithEdges`), `CORES_CONSISTENTES`, `REALISTA`, `REALISTA_COM_ARESTAS` (= `RealisticWithEdges`). Aceita apelidos (`SHADING`, `Shaded`, `SHADING_WITH_EDGES`, `Realistic`...) e `""` = não mexer no estilo |
-| `MOSTRAR_ARESTAS_VISTA_3D` | `True` | `True` = troca o estilo pedido pela variante **com arestas** (`SOMBREADO` → `SOMBREADO_COM_ARESTAS` = `DisplayStyle.ShadingWithEdges`); `ESTRUTURA_ARAME`/`LINHAS_OCULTAS` não mudam (já mostram as arestas). **Não existe `View.ShowEdges` na API** |
-| `OCULTAR_CATEGORIAS_VISTA_3D` | `True` | `True` = oculta **por categoria** as anotações/cotas e os elementos auxiliares na vista 3D |
-| `CATEGORIAS_OCULTAS_VISTA_3D` | 12 `OST_*` | `BuiltInCategory`s ocultadas na vista 3D: `OST_Dimensions`, `OST_TextNotes`, `OST_GenericAnnotation`, `OST_Levels`, `OST_Grids`, `OST_CLines`, `OST_ReferenceLines`, `OST_ReferencePoints`, `OST_Walls`, `OST_Floors`, `OST_Ceilings`, `OST_Roofs` (a categoria da própria família é sempre preservada) |
+| `GRAVAR_ORIENTACAO_VISTA_3D` | `True` | `True` = chama `View3D.SaveOrientation()` (o `.rfa` reabre na isométrica escolhida); `False` = só orienta na sessão atual |
+| `ESTILO_VISUAL_VISTA_3D` | `"SOMBREADO"` | **Padrão** de estilo visual quando `IN[3]` não vem: `ESTRUTURA_ARAME`, `LINHAS_OCULTAS`, `SOMBREADO`, `SOMBREADO_COM_ARESTAS`, `CORES_CONSISTENTES`, `REALISTA`, `REALISTA_COM_ARESTAS`. Aceita apelidos e `""` = não mexer no estilo |
+| `MOSTRAR_ARESTAS_VISTA_3D` | `True` | `True` = troca o estilo pedido pela variante **com arestas** (`SOMBREADO` → `SOMBREADO_COM_ARESTAS`, `REALISTA` → `REALISTA_COM_ARESTAS`); `ESTRUTURA_ARAME`/`LINHAS_OCULTAS` não mudam. **Não existe `View.ShowEdges` na API** |
+| `OCULTAR_CATEGORIAS_VISTA_3D` | `True` | `True` = oculta **por categoria** as anotações/cotas e os elementos auxiliares na vista de preview |
+| `CATEGORIAS_OCULTAS_VISTA_3D` | 12 `OST_*` | `BuiltInCategory`s ocultadas: `OST_Dimensions`, `OST_TextNotes`, `OST_GenericAnnotation`, `OST_Levels`, `OST_Grids`, `OST_CLines`, `OST_ReferenceLines`, `OST_ReferencePoints`, `OST_Walls`, `OST_Floors`, `OST_Ceilings`, `OST_Roofs` (a categoria da própria família é sempre preservada) |
 | `RENOMEAR_VISTAS_PT_BR` | `True` | `True` = traduz nomes de vistas padrão do Revit para português (Brasil) |
 
 ---
@@ -689,46 +822,51 @@ JANELA | OK: TaskDialog_... | <mensagem da janela do Revit respondida automatica
   primeira subpasta que tiver uma família. Com uma **lista** de pastas em `IN[0]`,
   cada pasta pesquisada recebe o **seu** `_backup_upgrade\`, preservando a árvore de
   cada uma a partir dela mesma; o log fica na **primeira** pasta de `IN[0]`.
-- **Vista 3D:** a API não permite "ativar" uma vista de um documento aberto em segundo
-  plano; o que define a miniatura do arquivo é o **preview** — que o script grava
-  (vista 3D permanente + `SaveOptions.PreviewViewId`).
+- **A vista de preview pode não ser 3D.** Se `IN[1]` for `Planta`/`Corte`/`Detalhe`/
+  `Elevação`, o script **valida** com `IsViewIdValidForPreview` — se o Revit recusar,
+  cai na `Vista 3D` com aviso. Nem toda versão do Revit aceita essas vistas como preview
+  de família; o fallback é intencional.
+- **A API não permite "ativar" uma vista de um documento aberto em segundo plano**; o
+  que define a miniatura do arquivo é o **preview** — que o script grava.
 - **Orientação gravada ≠ orientação da sessão:** `SetOrientation` só muda a vista na
   sessão atual; é `View3D.SaveOrientation` que grava a direção no arquivo. Como a API
   proíbe gravar a orientação da vista 3D **padrão** do documento, essa vista é
-  renomeada para `Vista 1` antes — e é isso que faz o `.rfa` reabrir em SE Isometric.
-- **Estilo visual e categorias ocultas também são propriedades da VISTA** (`View.DisplayStyle`
-  e `View.SetCategoryHidden`), não do documento: ficam gravados no `.rfa` junto com a vista e
-  são exatamente o que aparece no preview/miniatura. `DisplayStyle.Shaded` **não existe** —
-  "Sombreado" é `DisplayStyle.Shading`, e "Sombreado com arestas" é
-  `DisplayStyle.ShadingWithEdges` (o valor que `MOSTRAR_ARESTAS_VISTA_3D` usa).
-- **A API não tem `View.ShowEdges` nem `View3D.ShowEdges`**: o checkbox *Mostrar arestas* não
-  é acessível por propriedade (conferido na `RevitAPI.xml` do Revit 2026). Para o preview sair
-  sombreado **com** as arestas, o script usa `DisplayStyle.ShadingWithEdges`
-  ("Sombreado com arestas") — veja
-  [Arestas visíveis no preview](#arestas-visíveis-no-preview-mostrar_arestas_vista_3d).
-- **Não existe `View.HideElements` em documento de família:** ocultar elementos isolados não é
-  possível pela API; o script oculta por **categoria** (o mesmo efeito de desmarcar a categoria
-  em *Visibilidade/Substituições*). A categoria da própria família (`Family.FamilyCategory`)
-  é sempre preservada, para a vista 3D — e o preview — nunca ficarem vazios.
+  renomeada para `Vista 1` antes — e é isso que faz o `.rfa` reabrir na isométrica
+  escolhida.
+- **As 6 isométricas vêm do ViewCube** (`FSD`, `FSE`, `TSD`, `TSE`, `FID`, `FIE`). As
+  4 primeiras são idênticas às antigas `SE/SO/NE/NO Isometric` — os nomes antigos
+  continuam aceitos como apelido para não quebrar grafos.
+- **Estilo visual e categorias ocultas também são propriedades da VISTA**
+  (`View.DisplayStyle` e `View.SetCategoryHidden`), não do documento: ficam gravados
+  no `.rfa` junto com a vista e são exatamente o que aparece no preview/miniatura.
+  `DisplayStyle.Shaded` **não existe** — "Sombreado" é `DisplayStyle.Shading`.
+- **A API não tem `View.ShowEdges` nem `View3D.ShowEdges`**: o checkbox *Mostrar
+  arestas* não é acessível por propriedade (conferido na `RevitAPI.xml` do Revit 2026).
+  Para o preview sair sombreado **com** as arestas, o script usa
+  `DisplayStyle.ShadingWithEdges` ("Sombreado com arestas").
+- **Não existe `View.HideElements` em documento de família:** ocultar elementos
+  isolados não é possível pela API; o script oculta por **categoria**. A categoria
+  da própria família (`Family.FamilyCategory`) é sempre preservada.
 - Se a família não tiver tipo de vista 3D (caso raro), o script não consegue criar a
   vista, segue normalmente e registra o aviso no `OUT`.
 - **Nomes de vistas:** apenas `View.Name` é alterado. Agrupamentos do Navegador de
   Projeto (`Views`, `3D Views`...) são textos da interface do Revit (definidos pelo
   idioma instalado) e **não** existem como propriedade renomeável na API.
-- **Respostas automáticas = "OK", nunca "Remover restrições".** O script descarta os avisos
-  das próprias transações (`IFailuresPreprocessor`) e responde "OK" nas janelas que o Revit
-  abre por conta própria (`DialogBoxShowing`) — em nenhum caso ele altera as restrições da
-  família para "resolver" um aviso. Se um passo depender de uma resolução, ele é desfeito e
-  registrado nos `avisos:` da família.
+- **Respostas automáticas = "OK", nunca "Remover restrições".** O script descarta os
+  avisos das próprias transações (`IFailuresPreprocessor`) e responde "OK" nas janelas
+  que o Revit abre por conta própria (`DialogBoxShowing`) — em nenhum caso ele altera
+  as restrições da família para "resolver" um aviso.
 - **O handler de janelas é temporário:** é assinado em `ativar_respostas_automaticas()`
-  (início do lote) e removido em `desativar_respostas_automaticas()` (dentro de `try/finally`),
-  então o Revit volta ao comportamento normal ao terminar — inclusive se o script falhar.
+  (início do lote) e removido em `desativar_respostas_automaticas()` (dentro de
+  `try/finally`), então o Revit volta ao comportamento normal ao terminar — inclusive
+  se o script falhar.
 
 ---
 
 ## ✅ Requisitos
 
-- Revit 2026 (testado com `RevitAPI.dll` 2026) e Dynamo 3.4+
+- Revit 2026 (testado com `RevitAPI.dll` 2026) e Dynamo 3.4+ (**Dynamo 2.16+ para o
+  nó `Custom Selection`** — Revit 2023.1+)
 - Engine do nó Python: **CPython3** (não usar IronPython 2.7)
 - Permissão de escrita na pasta das famílias (evite arquivos marcados como somente leitura)
 - (Opcional) Python 3 para rodar `validar_traducao.py`, `validar_respostas_revit.py` e
@@ -739,28 +877,32 @@ JANELA | OK: TaskDialog_... | <mensagem da janela do Revit respondida automatica
 
 | Sintoma | Provável causa / solução |
 |---|---|
+| Não encontro o nó `Custom Selection` no Dynamo | Use **Dynamo 2.16+ (Revit 2023.1+)**. Em versões antigas, use o pacote **Data-Shapes** (`UI.DropDown Data`) ou escreva os valores manualmente em Code Blocks |
+| `AVISO \| IN[x]: valor desconhecido 'One'` no `OUT` | O Custom Selection está com o valor padrão (`One`) — abra o nó e configure as opções Display/Value conforme as tabelas em [Escolhas no Dynamo](#️-escolhas-no-dynamo-custom-selection-in1in2in3) |
 | `File already exists!` | Use `doc.Save(SaveOptions)` (já corrigido) ou `OverwriteExistingFile = True` (singular) no `SaveAs` |
 | `The file is read-only, can not be saved` | Desmarque "Somente leitura" no arquivo/pasta |
-| `options.PreviewViewId is not valid for generation of a preview` | A vista escolhida não serve como preview — o script valida antes e, se falhar, ignora o preview |
+| `options.PreviewViewId is not valid for generation of a preview` | A vista escolhida em `IN[1]` não serve como preview — o script valida antes e, se falhar, cai na Vista 3D |
 | Arquivo pulado com "ja aberto no Revit" | Feche a família no Revit e execute novamente |
-| `_backup_upgrade` criado **dentro de uma subpasta** (em vez da raiz da pasta pesquisada) | Era um **bug**: a raiz era deduzida do **primeiro `.rfa`** encontrado (`os.path.dirname(lista_final[0])`). Já corrigido — cada família leva a **sua raiz da pesquisa** (`IN[0]`). **Rode `sincronizar_dyn.ps1`**: o `.dyn` guarda o Python embutido e, sem sincronizar, o Dynamo continua com o código antigo |
-| Log com o nome antigo `_log_formatar_unidades.txt` | O log passou a se chamar `_log_atualiza_familias.txt` junto com o novo nome do projeto (`NOME_LOG`). Os logs antigos que ficaram nas pastas podem ser apagados e é preciso **rodar `sincronizar_dyn.ps1`** para o `.dyn` valer |
-| Aviso `Backup: nao foi possivel copiar o original` | O `_backup_upgrade\` não pôde ser criado/copiado (pasta sem permissão de escrita, caminho muito longo ou arquivo em uso). O `.rfa` seria sobrescrito **sem** cópia do original — libere a pasta e execute de novo |
-| `'list' object has no attribute 'Count'` | No engine **CPython3 (pythonnet)** as coleções da API do Revit chegam ao Python como **listas**, que não têm `.Count`. O script agora usa o auxiliar `contar()` (`len()` com fallback para `.Count`) — já corrigido |
-| A vista 3D não abre em SE Isometric no arquivo salvo | A orientação não foi gravada: verifique se a vista **não** é a vista 3D padrão do documento (o script renomeia para `Vista 1` justamente por isso) e se `GRAVAR_ORIENTACAO_VISTA_3D = True`. O aviso aparece no `OUT` após `avisos:` |
-| O preview/miniatura não fica no estilo pedido | (1) `ESTILO_VISUAL_VISTA_3D` está `""`/`None` (o script não mexe no estilo); (2) valor não reconhecido — aparece `Vista 3D (estilo visual): valor desconhecido '...'` em `avisos:`; (3) o **`.dyn` está desatualizado** (o grafo guarda uma cópia do Python) — rode `sincronizar_dyn.ps1`; (4) aparece `o arquivo ficou em 'X' (pedido: 'Y')` em `avisos:` — o Revit recusou o estilo naquela vista |
-| **Mudei `ESTILO_VISUAL_VISTA_3D` no `.py` e a miniatura não mudou** | (1) O `.dyn` guarda uma **cópia** do script: editar o `.py` não muda o grafo — rode `sincronizar_dyn.ps1` (ele confere e falha se ficar fora de sincronia) e execute de novo; confirme no `OUT` a linha `estilo 3D: ...` com o valor novo; (2) o arquivo pode ter sido `PULADO` (já aberto no Revit / `IGNORAR_JA_ATUALIZADAS`); (3) o Windows mantém **cache de miniaturas** — pressione F5/feche e reabra a pasta (ou limpe `thumbcache_*.db`) antes de concluir que o `.rfa` não mudou; para conferir "por dentro", abra a família e olhe a vista `Vista 1` |
-| As arestas não aparecem no preview sombreado | Não existe `View.ShowEdges`/`View3D.ShowEdges` na API. Use `MOSTRAR_ARESTAS_VISTA_3D = True` (aplica `DisplayStyle.ShadingWithEdges` = "Sombreado com arestas") ou `ESTILO_VISUAL_VISTA_3D = "SOMBREADO_COM_ARESTAS"`. Em uma versão do Revit sem esse valor do enum o ajuste é ignorado em silêncio — nesse caso use `LINHAS_OCULTAS` (`DisplayStyle.HLR`), que sempre mostra as arestas |
-| As anotações/cotas continuam aparecendo na vista 3D | (1) `OCULTAR_CATEGORIAS_VISTA_3D = False`; (2) a categoria não está em `CATEGORIAS_OCULTAS_VISTA_3D` — acrescente o nome do `BuiltInCategory`; (3) o `.dyn` está desatualizado — rode `sincronizar_dyn.ps1` |
-| `categoria(s) nao encontrada(s)` nos `avisos:` | Algum nome de `CATEGORIAS_OCULTAS_VISTA_3D` não existe como valor de `BuiltInCategory` (erro de digitação). Ele é ignorado com aviso — o lote não para. Corrija o nome na lista |
-| `DisplayStyle.Shaded` / `AttributeError: Shaded` | Esse valor **não existe** na API: "Sombreado" é `DisplayStyle.Shading`. Use uma das chaves de `ESTILOS_VISUAIS_VISTA_3D` |
-| A vista 3D (e o preview) ficou vazia depois de ocultar categorias | Não deveria acontecer: a categoria da própria família (`Family.FamilyCategory`) nunca é ocultada. Se a geometria estiver em outra categoria (ex.: `OST_GenericModel`), remova essa categoria de `CATEGORIAS_OCULTAS_VISTA_3D` |
-| `Could not save the orientation of the view` / aviso "a orientacao nao pode ser gravada" | `View3D.SaveOrientation()` foi chamado em uma vista 3D padrão (`CanSaveOrientation()` retornou `False`) — renomeie a vista 3D (o script já faz isso automaticamente com `NOME_VISTA_3D`) |
-| Aviso/erro de "up vector is not perpendicular to the view direction" | O par `forward`/`up` escolhido em `DIRECOES_VISTA_3D` não é ortogonal; use uma das quatro direções já validadas (todas com produto escalar 0) |
-| Nomes de vistas continuam em inglês | (1) `RENOMEAR_VISTAS_PT_BR = False`; (2) o `.dyn` está **desatualizado** — rode `sincronizar_dyn.ps1` (o validador `validar_traducao.py` detecta isso); (3) o nome não corresponde a nenhum padrão conhecido (nomes personalizados são preservados de propósito) |
-| Vistas em francês/espanhol continuam sem tradução | Falta cadastrar o nome no dicionário: ligue `RELATAR_VISTAS_NAO_TRADUZIDAS = True`, rode o lote e veja a lista `vistas sem traducao: ...` no log/`OUT` |
-| Agrupamentos `Views` / `3D Views` continuam em inglês | São textos da interface do Revit (idioma instalado), não propriedades da API — não há como renomeá-los por script |
-| O lote **parou** na janela *"As restrições entre a geometria..."* (Remover restrições / OK) | Confirme `RESPONDER_DIALOGOS_COM_OK = True` e **rode `sincronizar_dyn.ps1`** (o `.dyn` guarda o Python embutido: sem sincronizar, o Dynamo continua rodando o código antigo, sem a resposta automática) |
-| Aviso `nao foi possivel assinar o evento de janelas do Revit` no `OUT` | O evento `DialogBoxShowing` não pôde ser assinado (situação incomum): o lote segue, mas alguma janela pode continuar aparecendo — responda manualmente ou feche a janela e execute de novo |
-| Janela respondida com "OK" mas o passo pretendido não foi feito (aparece `avisos: ... Revit: ... (transacao desfeita)`) | Era uma **falha de erro** (não um aviso): o Revit só "resolve" esse tipo de falha alterando alguma coisa, e o script prefere desfazer a transação (rollback) a escolher uma resolução sozinho |
-| O aviso de restrições voltou a aparecer em outros fluxos (fora do Dynamo) | A causa é a geometria sem restrição na família — recomenda-se editá-la e **restringir** (alinhar + bloquear). O script sempre responde "OK"; "Remover restrições" muda a família e não é usado de propósito |
+| `_backup_upgrade` criado **dentro de uma subpasta** | Era um **bug**: a raiz era deduzida do **primeiro `.rfa`**. Já corrigido — cada família leva a **sua raiz da pesquisa** (`IN[0]`). **Rode `sincronizar_dyn.ps1`** |
+| Log com o nome antigo `_log_formatar_unidades.txt` | O log passou a se chamar `_log_atualiza_familias.txt`. Logs antigos podem ser apagados e é preciso **rodar `sincronizar_dyn.ps1`** |
+| Aviso `Backup: nao foi possivel copiar o original` | O `_backup_upgrade\` não pôde ser criado/copiado. O `.rfa` seria sobrescrito **sem** cópia do original — libere a pasta e execute de novo |
+| `'list' object has no attribute 'Count'` | No engine **CPython3 (pythonnet)** as coleções vêm como **listas**; o script usa `contar()` (`len()` com fallback para `.Count`) — já corrigido |
+| A vista de preview não abre na isométrica escolhida | (1) `IN[2]` está com valor desconhecido (aparece `AVISO` no `OUT`); (2) `IN[1]` não é `Vista 3D` — só ela aceita `SetOrientation`; (3) `GRAVAR_ORIENTACAO_VISTA_3D = False`; (4) a vista ainda é a padrão do documento (o script renomeia para `Vista 1` justamente por isso) |
+| `AVISO \| IN[1] (tipo de vista): ... usando a vista 3D como fallback` | A vista escolhida não pôde ser obtida/criada ou não é válida como `PreviewViewId` — o script cai na Vista 3D. Escolha `Vista 3D` ou verifique se a família tem o tipo de vista necessário |
+| O preview/miniatura não fica no estilo pedido | (1) `IN[3]` está com valor desconhecido (aparece `AVISO`); (2) `ESTILO_VISUAL_VISTA_3D` no `.py` está `""`/`None`; (3) o **`.dyn` está desatualizado** — rode `sincronizar_dyn.ps1`; (4) aparece `o arquivo ficou em 'X' (pedido: 'Y')` em `avisos:` — o Revit recusou o estilo naquela vista |
+| **Mudei `IN[3]` no dropdown e a miniatura não mudou** | (1) `MOSTRAR_ARESTAS_VISTA_3D = True` está trocando `SHADING` por `SHADING_WITH_EDGES` — veja a seção [Arestas visíveis](#arestas-visíveis-no-preview-mostrar_arestas_vista_3d); (2) o arquivo pode ter sido `PULADO` (já aberto no Revit / `IGNORAR_JA_ATUALIZADAS`); (3) o Windows mantém **cache de miniaturas** — pressione F5/feche e reabra a pasta |
+| As arestas não aparecem no preview sombreado | Não existe `View.ShowEdges`/`View3D.ShowEdges` na API. Use `MOSTRAR_ARESTAS_VISTA_3D = True` (aplica `DisplayStyle.ShadingWithEdges`) ou escolha `Shading With Edges` direto em `IN[3]`. Em uma versão sem esse valor do enum, use `Hidden Lines` (`DisplayStyle.HLR`) |
+| As anotações/cotas continuam aparecendo na vista de preview | (1) `OCULTAR_CATEGORIAS_VISTA_3D = False`; (2) a categoria não está em `CATEGORIAS_OCULTAS_VISTA_3D`; (3) o `.dyn` está desatualizado |
+| `categoria(s) nao encontrada(s)` nos `avisos:` | Algum nome de `CATEGORIAS_OCULTAS_VISTA_3D` não existe como valor de `BuiltInCategory`. Ele é ignorado com aviso — corrija o nome |
+| `DisplayStyle.Shaded` / `AttributeError: Shaded` | Esse valor **não existe** na API: "Sombreado" é `DisplayStyle.Shading` |
+| A vista de preview ficou vazia depois de ocultar categorias | Não deveria acontecer: a categoria da própria família nunca é ocultada. Se a geometria estiver em outra categoria (ex.: `OST_GenericModel`), remova essa categoria de `CATEGORIAS_OCULTAS_VISTA_3D` |
+| `Could not save the orientation of the view` / aviso "a orientacao nao pode ser gravada" | `View3D.SaveOrientation()` foi chamado em uma vista 3D padrão (`CanSaveOrientation()` = `False`) — renomeie a vista (o script já faz com `NOME_VISTA_3D`) |
+| Aviso/erro de "up vector is not perpendicular to the view direction" | O par `forward`/`up` de alguma entrada de `DIRECOES_VISTA_3D` não é ortogonal; use uma das 6 já validadas |
+| Nomes de vistas continuam em inglês | (1) `RENOMEAR_VISTAS_PT_BR = False`; (2) o `.dyn` está **desatualizado** — rode `sincronizar_dyn.ps1`; (3) o nome não corresponde a nenhum padrão conhecido |
+| Vistas em francês/espanhol continuam sem tradução | Falta cadastrar o nome: ligue `RELATAR_VISTAS_NAO_TRADUZIDAS = True`, rode o lote e veja `vistas sem traducao: ...` no log/`OUT` |
+| Agrupamentos `Views` / `3D Views` continuam em inglês | São textos da interface do Revit (idioma instalado), não propriedades da API |
+| O lote **parou** na janela *"As restrições entre a geometria..."* | Confirme `RESPONDER_DIALOGOS_COM_OK = True` e **rode `sincronizar_dyn.ps1`** |
+| Aviso `nao foi possivel assinar o evento de janelas do Revit` | O evento `DialogBoxShowing` não pôde ser assinado (incomum): o lote segue, mas alguma janela pode continuar aparecendo |
+| Janela respondida com "OK" mas o passo não foi feito (`avisos: ... Revit: ... (transacao desfeita)`) | Era uma **falha de erro** (não um aviso): o Revit só "resolve" alterando alguma coisa, e o script prefere desfazer a transação |
+| O aviso de restrições voltou a aparecer em outros fluxos | A causa é a geometria sem restrição na família — edite-a e **restringir** (alinhar + bloquear). O script sempre responde "OK" |
+````

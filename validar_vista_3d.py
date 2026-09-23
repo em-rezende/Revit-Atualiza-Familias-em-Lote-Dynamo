@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 # =============================================================================
-#  VALIDADOR (SEM ABRIR O REVIT): ESTILO VISUAL E CATEGORIAS OCULTAS DA VISTA 3D
+#  VALIDADOR (SEM ABRIR O REVIT): ESTILO VISUAL, CATEGORIAS OCULTAS E
+#  ENTRADAS DO DYNAMO (IN[1]/IN[2]/IN[3])
 # -----------------------------------------------------------------------------
-#  Testa, fora do Revit, o que o script faz na vista 3D antes de salvar:
+#  Testa, fora do Revit, o que o script faz na vista de preview antes de salvar:
+#
 #    - definir_estilo_vista_3d(): aplica View.DisplayStyle (padrao
 #      DisplayStyle.ShadingWithEdges = "Sombreado com arestas", porque
 #      MOSTRAR_ARESTAS_VISTA_3D = True), aceita as chaves de
@@ -10,19 +12,40 @@
 #      "SHADING_WITH_EDGES"...), aceita o proprio valor do enum e transforma
 #      chave invalida em AVISO (sem mexer na vista); depois de gravar, CONFERE o
 #      estilo que ficou na vista e avisa quando o Revit aplicou outro;
+#
 #    - chave_estilo_visual()/descricao_estilo_visual()/MOSTRAR_ARESTAS_VISTA_3D:
-#      o ajuste de arestas troca "SOMBREADO" por "SOMBREADO_COM_ARESTAS"
-#      (DisplayStyle.ShadingWithEdges) e "REALISTA" por "REALISTA_COM_ARESTAS";
-#      "ESTRUTURA_ARAME"/"LINHAS_OCULTAS" (que ja mostram as arestas) e
-#      "CORES_CONSISTENTES" (sem variante com arestas) nao mudam;
+#      o ajuste de arestas troca "SOMBREADO" por "SOMBREADO_COM_ARESTAS" e
+#      "REALISTA" por "REALISTA_COM_ARESTAS"; "ESTRUTURA_ARAME"/"LINHAS_OCULTAS"
+#      (que ja mostram as arestas) e "CORES_CONSISTENTES" (sem variante com
+#      arestas) nao mudam;
+#
 #    - ocultar_categorias_vista_3d(): chama View.SetCategoryHidden para cada
-#      categoria de CATEGORIAS_OCULTAS_VISTA_3D, IGNORA nomes de BuiltInCategory
-#      que nao existem (erro de digitacao), tolera falha em UMA categoria e -
-#      o mais importante - NUNCA oculta a categoria da propria familia
-#      (Family.FamilyCategory): uma familia de parede mantem OST_Walls visivel;
-#    - ordem dos passos em processar_familia(): orientar -> estilo -> ocultar ->
-#      preview, e a linha de resultado com "estilo 3D"/"categorias ocultas"
-#      mostrando o estilo que valeu de fato (com o ajuste de arestas).
+#      categoria da lista do TIPO EFETIVO do preview (CATEGORIAS_OCULTAS_POR_TIPO;
+#      fallback na lista padrao CATEGORIAS_OCULTAS_VISTA_3D), IGNORA nomes de
+#      BuiltInCategory que nao existem (erro de digitacao), tolera falha em UMA
+#      categoria e - o mais importante - NUNCA oculta a categoria da propria
+#      familia (Family.FamilyCategory): uma familia de parede mantem OST_Walls
+#      visivel;
+#
+#    - a tabela por tipo: VISTA_3D oculta niveis e eixos (preview limpo);
+#      PLANTA e CORTE MANTEM niveis e eixos; ELEVACAO mantem niveis; DETALHE
+#      oculta so' as categorias de referencia (vista de desenho);
+#
+#    - as ENTRADAS DO DYNAMO (IN[1]/IN[2]/IN[3]): _normalizar_escolha()
+#      (hifen/underscore/espaco -> mesmo resultado), _resolver_entrada()
+#      (rotulo -> chave interna; desconhecido -> padrao + aviso),
+#      _resolver_entradas_dynamo() (IN ausente -> padroes sem avisos),
+#      as 6 direcoes do cubo (FSD/FSE/TSD/TSE/FID/FIE), os apelidos antigos
+#      (SE/SO/NE/NO Isometric), a ortogonalidade forward.up == 0 e as 7 chaves
+#      de estilo (Wireframe, Hidden Lines, Shading, Shading With Edges,
+#      Flat Colors, Realistic, Realistic With Edges);
+#
+#    - ordem dos passos em processar_familia(): vista -> estilo -> ocultar ->
+#      preview, e a linha de resultado com "estilo:"/"categorias ocultas:"
+#      mostrando o estilo que valeu de fato (com o ajuste de arestas);
+#
+#    - log CSV (_linha_csv): header na ordem fixa e escape correto de aspas e
+#      ';' dentro do campo de avisos.
 #
 #  Como funciona: as APIs do Revit (clr, Autodesk.Revit.DB, RevitServices) sao
 #  substituidas por stubs simples e o proprio batch_format_families.py e' lido e
@@ -34,12 +57,13 @@
 #  Saida esperada: uma linha "OK   | ..." por verificacao e, no fim,
 #  "VERIFICACOES FALHAS: 0" (codigo de saida 0; cada falha aparece listada).
 # =============================================================================
-"""Valida, fora do Revit, o estilo visual e as categorias ocultas da vista 3D."""
+"""Valida, fora do Revit, o estilo, as categorias e as entradas IN[1..3]."""
 
 import io
 import os
 import re
 import sys
+import math
 import builtins
 import types
 
@@ -292,8 +316,7 @@ class VistaQueFalhaNoEstilo(object):
 class VistaQueIgnoraOEstilo(VistaFalsa):
     """
     Vista que ACEITA a atribuicao de DisplayStyle mas continua em outro estilo -
-    o mesmo que uma vista do Revit que recusa o estilo pedido. O script deve
-    perceber (conferencia feita depois de gravar) e registrar o aviso.
+    o mesmo que uma vista do Revit que recusa o estilo pedido.
     """
 
     def __init__(self, estilo_final):
@@ -306,7 +329,7 @@ class VistaQueIgnoraOEstilo(VistaFalsa):
 
     @DisplayStyle.setter
     def DisplayStyle(self, valor):
-        pass          # aceita a atribuicao e mantem o estilo antigo
+        pass
 
 
 class FamiliaFalsa(object):
@@ -571,12 +594,12 @@ verificar(estilo_configurado() is ESTILO_SHADING_COM_ARESTAS and
           descricao_estilo().startswith("SOMBREADO_COM_ARESTAS"),
           "ajuste de arestas ligado de novo (padrao restaurado)")
 
-print("--- categorias ocultas na vista 3D (ocultar_categorias_vista_3d) ---")
+print("--- categorias ocultas na vista (ocultar_categorias_vista_3d) ---")
 doc, vista = ambiente()
 avisos = []
 ocultadas = ocultar_categorias(doc, vista, avisos)
 verificar(ocultadas == list(CONFIG_ORIGINAL),
-          "familia generica: as {0} categorias configuradas ocultadas na ordem".format(
+          "familia generica: as {0} categorias da lista padrao ocultadas".format(
               len(ocultadas)))
 verificar(vista.ocultadas == list(CONFIG_ORIGINAL),
           "View.SetCategoryHidden(Id, True) chamado para cada categoria")
@@ -665,19 +688,250 @@ verificar(ocultadas == [] and TransacaoFalsa.criadas == [],
           "vista3d = None: nada e' feito (familia sem vista 3D)")
 
 print("--- ordem dos passos no lote (processar_familia) ---")
+# Vista do preview (IN[1]/IN[2]) -> estilo (IN[3]) -> categorias ocultas -> preview.
 padrao = re.compile(
-    r"vista3d = obter_vista_3d\(doc, avisos\)\s*\n"
-    r"\s*padronizar_nome_vista_3d\(doc, vista3d, avisos\)\s*\n"
-    r"\s*orientar_vista_3d\(doc, vista3d, avisos\)\s*\n"
-    r"\s*estilo_visual_ok = definir_estilo_vista_3d\(doc, vista3d, avisos\)\s*\n"
-    r"\s*categorias_ocultas = ocultar_categorias_vista_3d\(doc, vista3d, avisos\)\s*\n"
-    r"\s*definir_preview_permanente\(doc, vista3d, avisos\)")
+    r"vista_preview, tipo_aplicado = obter_vista_preview\(\s*\n"
+    r"\s*doc, tipo_vista, direcao3d, avisos\)\s*\n"
+    r".*?"
+    r"estilo_visual_ok = definir_estilo_vista_3d\(doc, vista_preview, avisos\)\s*\n"
+    r".*?"
+    r"categorias_ocultas = ocultar_categorias_vista_3d\(\s*\n"
+    r"\s*doc, vista_preview, avisos, tipo_aplicado\)\s*\n"
+    r".*?"
+    r"definir_preview_permanente\(doc, vista_preview, avisos\)",
+    re.DOTALL)
 verificar(padrao.search(FONTE) is not None,
-          "vista 3D preparada na ordem: nome -> direcao -> estilo -> categorias -> preview")
-verificar("estilo 3D: {3} | categorias ocultas: {4} | " in FONTE and
+          "vista do preview preparada na ordem: vista -> estilo -> categorias -> preview")
+
+# Na vista 3D (IN[1] = "Vista 3D"), obter_vista_preview() padroniza o NOME e so'
+# depois ORIENTA a vista (nome -> direcao).
+padrao_3d = re.compile(
+    r'vista = obter_vista_3d\(doc, avisos\)\s*\n'
+    r'\s*padronizar_nome_vista_3d\(doc, vista, avisos\)\s*\n'
+    r'\s*orientar_vista_3d\(doc, vista, avisos, direcao3d\)\s*\n'
+    r'\s*return vista, "VISTA_3D"')
+verificar(padrao_3d.search(FONTE) is not None,
+          "vista 3D preparada na ordem: nome -> direcao")
+
+# O rotulo "estilo 3D:" antigo foi trocado por "estilo:" (que vale para qualquer
+# tipo de preview). E o "categorias ocultas:" continua. O tipo efetivo do
+# preview (VISTA_3D/PLANTA/...) e' acrescentado entre parenteses.
+verificar("estilo: {4} | categorias ocultas: {5} | " in FONTE and
           "estilo_aplicado = descricao_estilo_visual()" in FONTE,
-          "linha de resultado do lote mostra 'estilo 3D' (com o ajuste de arestas) "
+          "linha de resultado do lote mostra 'estilo' (com o ajuste de arestas) "
           "e 'categorias ocultas'")
+
+print("--- IN[1]/IN[2]/IN[3] (escolhas do Dynamo) ---")
+_normalizar_escolha = globais["_normalizar_escolha"]
+_resolver_entrada = globais["_resolver_entrada"]
+_resolver_entradas_dynamo = globais["_resolver_entradas_dynamo"]
+TIPOS_VISTA_PREVIEW = globais["TIPOS_VISTA_PREVIEW"]
+DIRECOES_VISTA_3D_APELIDOS = globais["DIRECOES_VISTA_3D_APELIDOS"]
+ESTILOS_VISUAIS_APELIDOS = globais["ESTILOS_VISUAIS_APELIDOS"]
+DIRECOES_VISTA_3D = globais["DIRECOES_VISTA_3D"]
+
+# 1) Normalizacao de rotulos: hifens, underscores e espacos caem na mesma chave
+verificar(_normalizar_escolha("Frente-Superior-Direita").upper() ==
+          _normalizar_escolha("Frente Superior Direita").upper() ==
+          _normalizar_escolha("FRENTE_SUPERIOR_DIREITA").upper(),
+          "_normalizar_escolha: hifen, espaco e underscore sao equivalentes")
+verificar(_normalizar_escolha("  shading ") == "shading",
+          "_normalizar_escolha: strip e caixa preservada (normalizacao no resolver)")
+verificar(_normalizar_escolha("") is None and _normalizar_escolha(None) is None,
+          "_normalizar_escolha: vazio/None -> None")
+
+# 2) _resolver_entrada: rotulo valido, apelido e valor desconhecido
+def _resolver_com_avisos(valor, padrao, mapa):
+    avisos = []
+    resultado = _resolver_entrada(valor, padrao, mapa, "teste", avisos)
+    return resultado, avisos
+
+r, av = _resolver_com_avisos("Vista 3D", "VISTA_3D", TIPOS_VISTA_PREVIEW)
+verificar(r == "VISTA_3D" and av == [], "IN[1] 'Vista 3D' -> VISTA_3D")
+r, av = _resolver_com_avisos("Planta", "VISTA_3D", TIPOS_VISTA_PREVIEW)
+verificar(r == "PLANTA" and av == [], "IN[1] 'Planta' -> PLANTA")
+r, av = _resolver_com_avisos("Elevação", "VISTA_3D", TIPOS_VISTA_PREVIEW)
+verificar(r == "ELEVACAO" and av == [], "IN[1] 'Elevação' -> ELEVACAO")
+r, av = _resolver_com_avisos("VISTA_3D", "VISTA_3D", TIPOS_VISTA_PREVIEW)
+verificar(r == "VISTA_3D" and av == [], "IN[1] chave interna -> mesmo valor")
+r, av = _resolver_com_avisos("xyz", "VISTA_3D", TIPOS_VISTA_PREVIEW)
+verificar(r == "VISTA_3D" and len(av) == 1 and "xyz" in av[0],
+          "IN[1] desconhecido -> padrao + aviso: " + repr(av))
+r, av = _resolver_com_avisos(None, "VISTA_3D", TIPOS_VISTA_PREVIEW)
+verificar(r == "VISTA_3D" and av == [], "IN[1] ausente -> padrao sem aviso")
+
+# 3) IN[2]: as 6 direcoes do cubo + apelidos antigos
+for entrada, esperado in (
+        ("Topo", "TOPO"), ("Frontal", "FRONTAL"),
+        ("Esquerda", "ESQUERDA"), ("Direita", "DIREITA"),
+        ("Posterior", "POSTERIOR"), ("Inferior", "INFERIOR"),
+        ("Top", "TOPO"), ("Front", "FRONTAL"),
+        ("Left", "ESQUERDA"), ("Right", "DIREITA"),
+        ("Back", "POSTERIOR"), ("Bottom", "INFERIOR"),
+#
+        ("Frente-Superior-Direita", "FSD"),
+        ("Frente-Superior-Esquerda", "FSE"),
+        ("Tras-Superior-Direita", "TSD"),
+        ("Tras-Superior-Esquerda", "TSE"),
+        ("Frente-Inferior-Direita", "FID"),
+        ("Frente-Inferior-Esquerda", "FIE"),
+        ("FSD", "FSD"), ("fid", "FID"),
+        ("SE Isometric", "FSD"),
+        ("SO Isometric", "FSE"),
+        ("NE Isometric", "TSD"),
+        ("NO Isometric", "TSE"),
+):
+    r, av = _resolver_com_avisos(entrada, "FSD", DIRECOES_VISTA_3D_APELIDOS)
+    verificar(r == esperado and av == [],
+              "IN[2] {0!r} -> {1}".format(entrada, esperado))
+r, av = _resolver_com_avisos("xyz", "FSD", DIRECOES_VISTA_3D_APELIDOS)
+verificar(r == "FSD" and len(av) == 1,
+          "IN[2] desconhecido -> padrao + aviso")
+
+# 4) Ortogonalidade das 6 direcoes (forward . up == 0) e sinal do Z no up
+for chave_dir, (fwd, up) in DIRECOES_VISTA_3D.items():
+    dot = fwd[0] * up[0] + fwd[1] * up[1] + fwd[2] * up[2]
+    verificar(abs(dot) < 1e-9,
+              "DIRECOES_VISTA_3D[{0}]: forward . up = {1}".format(chave_dir, dot))
+verificar(DIRECOES_VISTA_3D["FID"][1][2] < 0 and DIRECOES_VISTA_3D["FIE"][1][2] < 0,
+          "FID/FIE: up tem componente Z negativo (camera abaixo do modelo)")
+verificar(DIRECOES_VISTA_3D["FSD"][1][2] > 0 and DIRECOES_VISTA_3D["FSE"][1][2] > 0
+          and DIRECOES_VISTA_3D["TSD"][1][2] > 0 and DIRECOES_VISTA_3D["TSE"][1][2] > 0,
+          "FSD/FSE/TSD/TSE: up tem componente Z positivo (camera acima)")
+
+# 5) IN[3]: rotulos, apelidos e desconhecido
+for entrada, esperado in (
+        ("Wireframe", "ESTRUTURA_ARAME"),
+        ("Hidden Lines", "LINHAS_OCULTAS"),
+        ("Shading", "SOMBREADO"),
+        ("Shading With Edges", "SOMBREADO_COM_ARESTAS"),
+        ("Flat Colors", "CORES_CONSISTENTES"),
+        ("Realistic", "REALISTA"),
+        ("Realistic With Edges", "REALISTA_COM_ARESTAS"),
+        ("SHADING_WITH_EDGES", "SOMBREADO_COM_ARESTAS"),
+        ("HIDDEN_LINES", "LINHAS_OCULTAS"),
+):
+    chave = ESTILOS_VISUAIS_APELIDOS.get(entrada.upper(), entrada.upper())
+    verificar(chave_do_estilo(chave) == esperado,
+              "IN[3] {0!r} -> {1}".format(entrada, esperado))
+
+# 6) _resolver_entradas_dynamo: com IN = [""] (sem entradas), cai tudo no padrao
+def _resolver_com_in(lista_in):
+    globais["IN"] = lista_in
+    return _resolver_entradas_dynamo()
+
+tipo, direcao, estilo, avisos = _resolver_com_in([""])
+verificar(tipo == "VISTA_3D" and direcao == "FSD" and
+          chave_do_estilo(estilo) == "SOMBREADO" and avisos == [],
+          "IN=[] -> padroes sem avisos")
+tipo, direcao, estilo, avisos = _resolver_com_in(
+    ["", "Planta", "Frente-Inferior-Direita", "Realistic With Edges"])
+verificar(tipo == "PLANTA" and direcao == "FID" and
+          chave_do_estilo(estilo) == "REALISTA_COM_ARESTAS" and avisos == [],
+          "IN completo -> escolhas resolvidas")
+tipo, direcao, estilo, avisos = _resolver_com_in(["", "xyz", "xyz", "xyz"])
+verificar(tipo == "VISTA_3D" and direcao == "FSD" and
+          chave_do_estilo(estilo) == "SOMBREADO" and len(avisos) == 3,
+          "IN invalido -> 3 avisos, tudo no padrao: " + repr(avisos))
+
+# Restaura IN para o estado inicial (nao interfere em mais nada)
+globais["IN"] = [""]
+
+print("--- categorias ocultas por tipo de vista (CATEGORIAS_OCULTAS_POR_TIPO) ---")
+_categorias_para_ocultar = globais["_categorias_para_ocultar"]
+CATEGORIAS_POR_TIPO = globais["CATEGORIAS_OCULTAS_POR_TIPO"]
+CATEGORIAS_PADRAO = globais["CATEGORIAS_OCULTAS_VISTA_3D"]
+
+# 1) Toda chave esperada esta presente
+for tipo in ("VISTA_3D", "PLANTA", "CORTE", "DETALHE", "ELEVACAO"):
+    verificar(tipo in CATEGORIAS_POR_TIPO,
+              "CATEGORIAS_OCULTAS_POR_TIPO tem {0}".format(tipo))
+
+# 2) Diferenca conceitual: VISTA_3D oculta OST_Levels/OST_Grids; PLANTA/CORTE nao
+verificar("OST_Levels" in CATEGORIAS_POR_TIPO["VISTA_3D"] and
+          "OST_Grids" in CATEGORIAS_POR_TIPO["VISTA_3D"],
+          "VISTA_3D oculta niveis e eixos (preview limpo)")
+verificar("OST_Levels" not in CATEGORIAS_POR_TIPO["PLANTA"] and
+          "OST_Grids" not in CATEGORIAS_POR_TIPO["PLANTA"],
+          "PLANTA mantem niveis e eixos")
+verificar("OST_Levels" not in CATEGORIAS_POR_TIPO["CORTE"] and
+          "OST_Grids" not in CATEGORIAS_POR_TIPO["CORTE"],
+          "CORTE mantem niveis e eixos")
+verificar("OST_Levels" in CATEGORIAS_POR_TIPO["ELEVACAO"] and
+          "OST_Grids" not in CATEGORIAS_POR_TIPO["ELEVACAO"],
+          "ELEVACAO: mantem niveis (uteis de frente), sem eixos")
+verificar("OST_Levels" not in CATEGORIAS_POR_TIPO["DETALHE"] and
+          "OST_Dimensions" not in CATEGORIAS_POR_TIPO["DETALHE"],
+          "DETALHE: nao oculta niveis nem cotas (vista de desenho)")
+
+# 3) Fallback: tipo desconhecido/None -> lista PADRAO
+verificar(_categorias_para_ocultar("QUALQUER") == CATEGORIAS_PADRAO and
+          _categorias_para_ocultar(None) == CATEGORIAS_PADRAO,
+          "tipo desconhecido/None -> lista padrao")
+
+# 4) Toda categoria da tabela e' nome valido de BuiltInCategory
+todos = set()
+for lista in CATEGORIAS_POR_TIPO.values():
+    todos.update(lista)
+todos.update(CATEGORIAS_PADRAO)
+for nome in sorted(todos):
+    verificar(nome.startswith("OST_"),
+              "categoria '{0}' tem prefixo OST_".format(nome))
+
+# 5) ocultar_categorias_vista_3d aceita tipo_vista e usa a tabela certa
+globais["CATEGORIAS_OCULTAS_VISTA_3D"] = CATEGORIAS_PADRAO
+doc, vista = ambiente()
+ocultadas_3d = ocultar_categorias(doc, vista, [], "VISTA_3D")
+verificar(ocultadas_3d == list(CATEGORIAS_POR_TIPO["VISTA_3D"]),
+          "ocultar_categorias_vista_3d(tipo='VISTA_3D') usa a tabela de VISTA_3D")
+
+doc, vista = ambiente()
+ocultadas_planta = ocultar_categorias(doc, vista, [], "PLANTA")
+verificar(ocultadas_planta == list(CATEGORIAS_POR_TIPO["PLANTA"]),
+          "ocultar_categorias_vista_3d(tipo='PLANTA') usa a tabela de PLANTA")
+verificar("OST_Levels" not in ocultadas_planta and "OST_Grids" not in ocultadas_planta,
+          "PLANTA: niveis e eixos efetivamente preservados")
+
+doc, vista = ambiente()
+ocultadas_padrao = ocultar_categorias(doc, vista, [], None)
+verificar(ocultadas_padrao == list(CATEGORIAS_PADRAO),
+          "ocultar_categorias_vista_3d(tipo=None) usa a lista padrao")
+
+# 6) A categoria da propria familia continua preservada em qualquer tipo
+doc, vista = ambiente(categoria_familia="OST_Walls")
+ocultadas = ocultar_categorias(doc, vista, [], "VISTA_3D")
+verificar("OST_Walls" not in ocultadas,
+          "categoria da propria familia preservada tambem com tabela por tipo")
+
+print("--- log CSV (campos e escape) ---")
+_linha_csv = globais["_linha_csv"]
+
+campos_teste = {
+    "arquivo": "Porta.rfa",
+    "status": "OK",
+    "purgados": 4,
+    "tipo_escolhido": "VISTA_3D",
+    "tipo_preview": "VISTA_3D",
+    "vista_preview": "Vista 1",
+    "estilo": "SOMBREADO_COM_ARESTAS",
+    "categorias_ocultas": 12,
+    "vistas_renomeadas": 0,
+    "destino": "Porta.rfa",
+    "avisos": "",
+}
+texto = _linha_csv(campos_teste)
+verificar(texto.startswith("arquivo;status;purgados;"),
+          "CSV: header comeca com 'arquivo;status;purgados;'")
+verificar("Porta.rfa" in texto and "SOMBREADO_COM_ARESTAS" in texto,
+          "CSV: valores do registro presentes")
+verificar(texto.count("\n") == 2,
+          "CSV: header + 1 registro (2 quebras de linha)")
+
+campos_aviso = dict(campos_teste)
+campos_aviso["avisos"] = 'erro "grave"; outro'
+texto = _linha_csv(campos_aviso)
+verificar('""grave""' in texto and '; outro' in texto,
+          "CSV: aspas duplicadas e ';' preservados no campo de avisos")
 
 print("--- resumo ---")
 if FALHAS:
@@ -686,6 +940,3 @@ if FALHAS:
         print("  - " + falha)
     sys.exit(1)
 print("VERIFICACOES FALHAS: 0")
-
-
-
